@@ -7,8 +7,6 @@ import threading
 import RPi.GPIO as GPIO
 import subprocess
 
-
-
 from pynput import keyboard
 from pynput.keyboard import Controller
 import random
@@ -22,11 +20,11 @@ server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)
 server_socket.bind((server_ip, server_port))
 server_socket.listen(3)
-
+client_threads = []  # List to store client threads
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
-CHUNK = 1024
+CHUNK = 512
 MAX_PACKET_SIZE = 4096
 audio = pyaudio.PyAudio()
 reciever_stream = audio.open(format=FORMAT, rate = RATE, output=True, channels=CHANNELS, frames_per_buffer = CHUNK)
@@ -61,68 +59,6 @@ last_data_time = time.time()
 relay_status = 0
 receiving_audio = False  # Flag to indicate if audio reception is active
 
-
-
-def handle_client(client_socket, client_address):
-    global relay_status, last_data_time, last_relay_off_time, send_audio_flag, send_audio, receiving_audio, ok
-
-    try:
-        while True:
-            data = client_socket.recv(1024)
-            data = data.strip()
-            print(data)
-            # Handle relay on/off logic here...
-            if len(data) == 4:
-                print("\nrelay on", type(data))
-                if time.time() - last_relay_off_time >= timeout_duration:
-                    relay_status = False
-                    send_audio_event.clear()  # Pause sending audio
-                    receiving_audio = True  # Indicate that audio reception is active
-                    ok = False
-                    GPIO.output(gpio_pin, GPIO.LOW)
-                    GPIO.output(gpio_pin2, GPIO.HIGH)
-
-            elif len(data) == 3:
-                print("\nrelay off", type(data))
-                GPIO.output(gpio_pin, GPIO.HIGH)
-                GPIO.output(gpio_pin2, GPIO.LOW)
-                relay_status = True
-                last_relay_off_time = time.time()
-                send_audio_event.set()  # Resume sending audio
-                receiving_audio = False  # Indicate that audio reception is complete
-                ok = True
-
-            if not data:
-                break
-
-            if receiving_audio:
-                reciever_stream.write(data)
-                last_data_time = time.time()
-                
-                
-    except Exception as e:
-        print(f"Error handling client {client_address}: {e}")
-    finally:
-        client_socket.close()
-
-
-
-
-
-
-def accept_clients():
-    global numberOfConnection
-    while True:
-        if numberOfConnection < 4:
-            client_socket, client_address = server_socket.accept()
-            print(f"Accepted connection from {client_address}")
-            client_thread = threading.Thread(target=handle_client, args=(client_socket, client_address))
-            client_thread.start()
-            numberOfConnection += 1
-            
-            
-            
-            
 def check_timeout_and_turn_off_relay():
     global last_data_time, relay_status, ok
     while True:
@@ -162,8 +98,7 @@ def run_python_file(file_name):
     while True:
         try:
             process = subprocess.Popen(["python", file_name])
-            time.sleep(30)  # Wait for 2 seconds
-            process.terminate()  # Terminate the process
+            time.sleep(500)  # Wait for 2 seconds
         except KeyboardInterrupt:
             print("Terminating the program.")
             break
@@ -174,9 +109,6 @@ def send_audio():
     while True:
         if True:
             try:
-                while sender_stream.get_read_available() >= CHUNK:
-                    sender_stream.read(CHUNK)
-
                 while True:
                     data = sender_stream.read(CHUNK)
                     if ok and client_socket is not None:
@@ -184,71 +116,83 @@ def send_audio():
                         print("Sending audio:", len(data), "bytes")
             except Exception as e:
                 print(f"Error sending audio ew: {type(e)}")
-                #python_file = "/home/army/Desktop/rr_update.py"  # Replace this with your Python file name
-                #run_python_file(python_file)
+                python_file = "/home/army/Desktop/rr_update.py"  # Replace this with your Python file name
+                run_python_file(python_file)
         else:
             time.sleep(0.1)
             
             
-            
-def recieve_audio():
+def recieve_audio(client_socket):
+    try:
+        while True:
+            data = client_socket.recv(1024)
+            data = data.strip()
+            print(data)
+            if len(data) == 4:
+                print("\nrelay on", type(data))
+                if time.time() - last_relay_off_time >= timeout_duration:
+                    relay_status = False
+                    send_audio_event.clear()  # Pause sending audio
+                    receiving_audio = True  # Indicate that audio reception is active
+                    ok = False
+                    GPIO.output(gpio_pin, GPIO.LOW)
+                    GPIO.output(gpio_pin2, GPIO.HIGH)
+
+            if len(data) == 3:
+                print("\nrelay off", type(data))
+                GPIO.output(gpio_pin, GPIO.HIGH)
+                GPIO.output(gpio_pin2, GPIO.LOW)
+                relay_status = True
+                last_relay_off_time = time.time()
+                send_audio_event.set()  # Resume sending audio
+                receiving_audio = False  # Indicate that audio reception is complete
+                ok = True
+
+            if not data:
+                break
+
+            if True:
+                reciever_stream.write(data)
+                last_data_time = time.time()
+
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        client_socket.close()
+        print("Connection closed")
+
+
+
+
+
+
+def accept_clients():
+    global numberOfConnection
     while True:
         try:
-            global client_address, relay_status, last_data_time, client_socket, last_relay_off_time, send_audio_flag, send_audio, receiving_audio , ok 
-            if (numberOfConnection < 4):
+            if numberOfConnection < 4:
                 client_socket, client_address = server_socket.accept()
                 print(f"Accepted connection from {client_address}")
                 send_audio_flag = True  # Set the flag to start sending audio after connection
                 send_audio = True  # Start sending audio immediately
                 receiving_audio = True  # Indicate that audio reception is active
+
+                # Create a new thread for each connected client
+                client_thread = threading.Thread(target=recieve_audio, args=(client_socket,))
+                client_thread.start()
+                client_threads.append(client_thread)
+
         except Exception as e:
-            print(f'connection closed :{e}')
+            print(f'Connection closed: {e}')
             python_file = "/home/army/Desktop/rr_update.py"  # Replace this with your Python file name
             run_python_file(python_file)
             
-
-        try:
-            while True:
-                data = client_socket.recv(1024)
-                data = data.strip()
-                print(data)
-                if len(data) == 4:
-                    print("\nrelay on", type(data))
-                    if time.time() - last_relay_off_time >= timeout_duration:
-                        relay_status = False
-                        send_audio_event.clear()  # Pause sending audio
-                        receiving_audio = True  # Indicate that audio reception is active
-                        ok = False
-                        GPIO.output(gpio_pin, GPIO.LOW)
-                        GPIO.output(gpio_pin2, GPIO.HIGH)
-
-                if len(data) == 3:
-                    print("\nrelay off", type(data))
-                    GPIO.output(gpio_pin, GPIO.HIGH)
-                    GPIO.output(gpio_pin2, GPIO.LOW)
-                    relay_status = True
-                    last_relay_off_time = time.time()
-                    send_audio_event.set()  # Resume sending audio
-                    receiving_audio = False  # Indicate that audio reception is complete
-                    ok = True
-                    
-                if not data:
-                    break
-
-                if True:
-                    reciever_stream.write(data)
-                    last_data_time = time.time()
-
-        except Exception as e:
-            client_socket.close()
-            print(f"Error: {e}")
-            GPIO.cleanup()
-
-        finally:
-            GPIO.cleanup()
-            client_socket.close()
-            server_socket.close()
-            print("Connection closed")
+            
+            
+            
+            
+            
+            
 def record_and_send_audio():
     global relay_status, client_socket, send_audio_flag, send_audio
 
@@ -272,6 +216,7 @@ send_audio_thread = threading.Thread(target=send_audio)
 recieve_audio_thread = threading.Thread(target=recieve_audio)
 timeout_thread = threading.Thread(target=check_timeout_and_turn_off_relay)
 check_thread = threading.Thread(target=check_keypresses)
+
 
 accept_clients_thread = threading.Thread(target=accept_clients)
 accept_clients_thread.start()
